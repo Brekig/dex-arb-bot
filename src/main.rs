@@ -2,28 +2,35 @@ pub mod constants;
 pub mod pair_contract;
 
 use constants::{
-    SUSHISWAP_FACTORY_ADDRESS, TOKEN_DAI_ADDRESS, TOKEN_WETH_ADDRESS, UNISWAP_FACTORY_ADDRESS,
+    SUSHISWAP_FACTORY_ADDRESS, TOKEN_SHIBA_INU_ADDRESS, TOKEN_WETH_ADDRESS, UNISWAP_FACTORY_ADDRESS,
 };
 
 use ethers::contract::abigen;
 use ethers::{prelude::*, types::Address};
 // use futures::try_join;
-use pair_contract::{get_pair_contract, get_reserves};
+use pair_contract::{
+    get_pair_contract, get_reserves, get_sushiswap_pair_address, get_uniswap_pair_address,
+    listen_to_swaps, SushiswapV2Factory, UniswapV2Factory,
+};
 // use pair_contract::{SushiswapV2Pair, UniswapV2Pair};
 use std::env;
 use std::str::FromStr;
 use std::sync::Arc;
 
-// factories begin
-abigen!(
-    SushiswapV2Factory,
-    r#"[{"inputs":[{"internalType":"address","name":"_feeToSetter","type":"address"}],"stateMutability":"nonpayable","type":"constructor"},{"inputs":[],"name":"feeTo","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"feeToSetter","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"tokenA","type":"address"},{"internalType":"address","name":"tokenB","type":"address"}],"name":"getPair","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"tokenA","type":"address"},{"internalType":"address","name":"tokenB","type":"address"}],"name":"createPair","outputs":[{"internalType":"address","name":"pair","type":"address"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_feeTo","type":"address"}],"name":"setFeeTo","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_feeToSetter","type":"address"}],"name":"setFeeToSetter","outputs":[],"stateMutability":"nonpayable","type":"function"}]"#
-);
+//To stop the program gracefully
+use tokio::signal::ctrl_c;
+use tokio::sync::oneshot;
 
-abigen!(
-    UniswapV2Factory,
-    r#"[{"inputs":[{"internalType":"address","name":"_feeToSetter","type":"address"}],"stateMutability":"nonpayable","type":"constructor"},{"inputs":[],"name":"feeTo","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"feeToSetter","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"tokenA","type":"address"},{"internalType":"address","name":"tokenB","type":"address"}],"name":"getPair","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"tokenA","type":"address"},{"internalType":"address","name":"tokenB","type":"address"}],"name":"createPair","outputs":[{"internalType":"address","name":"pair","type":"address"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_feeTo","type":"address"}],"name":"setFeeTo","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_feeToSetter","type":"address"}],"name":"setFeeToSetter","outputs":[],"stateMutability":"nonpayable","type":"function"}]"#
-);
+// factories begin
+// abigen!(
+//     SushiswapV2Factory,
+//     r#"[{"inputs":[{"internalType":"address","name":"_feeToSetter","type":"address"}],"stateMutability":"nonpayable","type":"constructor"},{"inputs":[],"name":"feeTo","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"feeToSetter","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"tokenA","type":"address"},{"internalType":"address","name":"tokenB","type":"address"}],"name":"getPair","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"tokenA","type":"address"},{"internalType":"address","name":"tokenB","type":"address"}],"name":"createPair","outputs":[{"internalType":"address","name":"pair","type":"address"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_feeTo","type":"address"}],"name":"setFeeTo","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_feeToSetter","type":"address"}],"name":"setFeeToSetter","outputs":[],"stateMutability":"nonpayable","type":"function"}]"#
+// );
+
+// abigen!(
+//     UniswapV2Factory,
+//     r#"[{"inputs":[{"internalType":"address","name":"_feeToSetter","type":"address"}],"stateMutability":"nonpayable","type":"constructor"},{"inputs":[],"name":"feeTo","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"feeToSetter","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"tokenA","type":"address"},{"internalType":"address","name":"tokenB","type":"address"}],"name":"getPair","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"tokenA","type":"address"},{"internalType":"address","name":"tokenB","type":"address"}],"name":"createPair","outputs":[{"internalType":"address","name":"pair","type":"address"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_feeTo","type":"address"}],"name":"setFeeTo","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_feeToSetter","type":"address"}],"name":"setFeeToSetter","outputs":[],"stateMutability":"nonpayable","type":"function"}]"#
+// );
 //factories end
 
 //contracts begin
@@ -63,14 +70,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Get the pair address.
-    let sushiswap_pair_address: Address = sushi_swap_factory_contract
-        .get_pair(
-            Address::from_str(TOKEN_DAI_ADDRESS)?,
-            Address::from_str(TOKEN_WETH_ADDRESS)?,
-        )
-        .call()
-        .await?;
-
+    // let sushiswap_pair_address: Address = sushi_swap_factory_contract
+    //     .get_pair(
+    //         Address::from_str(TOKEN_SHIBA_INU_ADDRESS)?,
+    //         Address::from_str(TOKEN_WETH_ADDRESS)?,
+    //     )
+    //     .call()
+    //     .await?;
+    let sushiswap_pair_address: Address = get_sushiswap_pair_address::<Provider<Http>>(
+        &sushi_swap_factory_contract,
+        TOKEN_SHIBA_INU_ADDRESS,
+        TOKEN_WETH_ADDRESS,
+    )
+    .await
+    .expect("failed getting sushiswap pair address");
     println!("Sushiswap Pair Address: {:?}", sushiswap_pair_address);
 
     // Initialize the Uniswap factory contract.
@@ -80,13 +93,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Get the pair address.
-    let uniswap_pair_address: Address = uniswapfactory_contract
-        .get_pair(
-            Address::from_str(TOKEN_DAI_ADDRESS)?,
-            Address::from_str(TOKEN_WETH_ADDRESS)?,
-        )
-        .call()
-        .await?;
+    let uniswap_pair_address: Address = get_uniswap_pair_address::<Provider<Http>>(
+        &uniswapfactory_contract,
+        TOKEN_SHIBA_INU_ADDRESS,
+        TOKEN_WETH_ADDRESS,
+    )
+    .await
+    .expect("failed getting uniswap pair address");
 
     println!("Uniswap Pair Address: {:?}", uniswap_pair_address);
 
@@ -118,7 +131,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         uniswap_reserve1,
         sushiswap_reserve1,
     );
-    println!("Price difference: {:.2}%", price_difference);
+    println!("Price difference: {:.4}%", price_difference);
+
+    //listen for swaps
+    // Create a oneshot channel to signal shutdown
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    // Spawn a task for listening to swaps
+    let listen_task = tokio::spawn(listen_to_swaps(
+        uniswap_pair_contract,
+        sushiswap_pair_contract,
+        shutdown_rx,
+    ));
+    // Wait for the Ctrl+C signal
+    ctrl_c().await?;
+
+    // Send the shutdown signal
+    shutdown_tx
+        .send(())
+        .expect("Failed to send shutdown signal");
+
+    // Wait for the listen_to_swaps task to finish
+    match listen_task.await {
+        Ok(_) => {
+            println!("Exiting gracefully...");
+        }
+        Err(e) => {
+            eprintln!("Listen task failed with error: {}", e);
+            std::process::exit(1);
+        }
+    }
 
     Ok(())
 }
