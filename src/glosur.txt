@@ -1,0 +1,6 @@
+get contract: 
+        let contract = Contract::from_json(
+        provider.clone(),
+        "0xYourContractAddressHere".parse()?,
+        include_bytes!("./path/to/your/abi.json"),
+    )?;
