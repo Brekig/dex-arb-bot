@@ -7,6 +7,7 @@ use ethers::types::{Address, BlockId, BlockNumber, Filter, Log, U256};
 use ethers::utils::keccak256;
 use futures::StreamExt;
 use futures::{future::FutureExt, pin_mut, select};
+use std::cmp::Ordering;
 use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
@@ -14,6 +15,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::signal;
 use tokio::sync::oneshot;
+use tokio::sync::Mutex;
 
 abigen!(
     SushiswapV2Factory,
@@ -66,18 +68,24 @@ pub async fn listen_all_events(
     Ok(())
 }
 
+// Add a new function to calculate price ratios
+fn calculate_price_ratio(reserve0: U256, reserve1: U256) -> f64 {
+    reserve0.to_string().parse::<f64>().unwrap() / reserve1.to_string().parse::<f64>().unwrap()
+}
+
 pub async fn listen_swap_events(
-    contract: &UniswapV2Pair<Provider<Ws>>,
+    uniswap_pair_contract: &UniswapV2Pair<Provider<Ws>>,
+    sushiswap_pair_contract: &SushiswapV2Pair<Provider<Ws>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let event_signature = "Swap(address,uint256,uint256,uint256,uint256,address)";
     let event_topic = H256::from_slice(keccak256(event_signature).as_ref());
 
     let filter = Filter::new()
-        .address(contract.address())
+        .address(uniswap_pair_contract.address())
         .event(event_signature)
         .from_block(BlockNumber::Latest);
 
-    let client = contract.client();
+    let client = uniswap_pair_contract.client();
     let mut stream = client.watch(&filter).await?;
 
     println!("Waiting for swap events...");
@@ -90,8 +98,42 @@ pub async fn listen_swap_events(
         // let amount1_in = U256::from(data[32..64].try_into()?);
         // let amount0_out = U256::from(data[64..96].try_into()?);
         // let amount1_out = U256::from(data[96..128].try_into()?);
-        //TODO: caclulate if arbitrage is possible
+
         println!("sender = {:?}, recipient = {:?}", sender, recipient);
+
+        print!("Checking for arbitrage oppurtunity...");
+        //TODO: caclulate if arbitrage is possible
+        let (uniswap_reserve0, uniswap_reserve1, _) =
+            get_reserves(&Pair::UniswapV2Pair(uniswap_pair_contract.clone())).await?;
+        let (sushiswap_reserve0, sushiswap_reserve1, _) =
+            get_reserves(&Pair::SushiswapV2Pair(sushiswap_pair_contract.clone())).await?;
+        print!("Checking for arbitrage opportunity...");
+        let (price_difference, direction) = calculate_price_difference_and_direction(
+            uniswap_reserve0,
+            sushiswap_reserve0,
+            uniswap_reserve1,
+            sushiswap_reserve1,
+        );
+
+        println!(
+            "UNISWAP reserves after swap: {} and {}",
+            uniswap_reserve0, uniswap_reserve1
+        );
+        println!(
+            "SUSHISWAP reserves after swap: {} and {}",
+            sushiswap_reserve0, sushiswap_reserve1
+        );
+        println!("Price difference after swap: {:.4}%", price_difference);
+        println!("Direction: {:?}", direction);
+
+        match direction {
+            ArbitrageDirection::BuyUniswapSellSushiswap => {
+                println!("Buy on Uniswap, sell on Sushiswap.");
+            }
+            ArbitrageDirection::BuySushiswapSellUniswap => {
+                println!("Buy on Sushiswap, sell on Uniswap.");
+            }
+        }
     }
 
     Ok(())
@@ -166,6 +208,48 @@ pub async fn get_reserves<M: Middleware + 'static>(
         U256::from(reserve1),
         block_timestamp_last,
     ))
+}
+
+#[derive(Debug)]
+enum ArbitrageDirection {
+    BuyUniswapSellSushiswap,
+    BuySushiswapSellUniswap,
+}
+
+fn calculate_price_difference_and_direction(
+    uniswap_reserve0: U256,
+    sushiswap_reserve0: U256,
+    uniswap_reserve1: U256,
+    sushiswap_reserve1: U256,
+) -> (f64, ArbitrageDirection) {
+    let uniswap_price = uniswap_reserve1.to_string().parse::<f64>().unwrap()
+        / uniswap_reserve0.to_string().parse::<f64>().unwrap();
+    let sushiswap_price = sushiswap_reserve1.to_string().parse::<f64>().unwrap()
+        / sushiswap_reserve0.to_string().parse::<f64>().unwrap();
+
+    let price_difference = ((sushiswap_price - uniswap_price) / uniswap_price) * 100.0;
+
+    let direction = if price_difference > 0.0 {
+        ArbitrageDirection::BuyUniswapSellSushiswap
+    } else {
+        ArbitrageDirection::BuySushiswapSellUniswap
+    };
+
+    (price_difference.abs(), direction)
+}
+
+pub fn calculate_price_difference(
+    reserve0_a: U256,
+    reserve1_a: U256,
+    reserve0_b: U256,
+    reserve1_b: U256,
+) -> f64 {
+    let price_a = reserve1_a.to_string().parse::<f64>().unwrap()
+        / reserve0_a.to_string().parse::<f64>().unwrap();
+    let price_b = reserve1_b.to_string().parse::<f64>().unwrap()
+        / reserve0_b.to_string().parse::<f64>().unwrap();
+    let price_difference = ((price_a - price_b) / price_b) * 100.0;
+    price_difference
 }
 
 // pub async fn listen_for_swaps<M: Middleware + 'static>(
