@@ -318,6 +318,7 @@ dependencies = [
  "dotenv",
  "ethers",
  "futures",
+ "lazy_static",
  "serde",
  "serde_json",
  "tokio",
