@@ -69,9 +69,9 @@ pub async fn listen_all_events(
 }
 
 // Add a new function to calculate price ratios
-fn calculate_price_ratio(reserve0: U256, reserve1: U256) -> f64 {
-    reserve0.to_string().parse::<f64>().unwrap() / reserve1.to_string().parse::<f64>().unwrap()
-}
+// fn calculate_price_ratio(reserve0: U256, reserve1: U256) -> f64 {
+//     reserve0.to_string().parse::<f64>().unwrap() / reserve1.to_string().parse::<f64>().unwrap()
+// }
 
 async fn get_current_gas_price() -> Result<U256, Box<dyn std::error::Error>> {
     let provider = Provider::try_from(ETH_MAINNET_HTTP.as_str())?;
@@ -196,7 +196,7 @@ pub async fn listen_swap_events(
                         wei_to_eth(uniswap_output),
                         wei_to_eth(sushiswap_output)
                     );
-                    let current_gas_cost = get_current_gas_price().await?;
+                    // let current_gas_cost = get_current_gas_price().await?;
                 } else {
                     println!("No profitable arbitrage opportunity found.");
                 }
